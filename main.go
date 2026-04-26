@@ -290,12 +290,12 @@ func dump(filePath, fileNameNoSuffix string) error {
 	if err != nil {
 		return fmt.Errorf("创建输出文件失败: %v", err)
 	}
-	defer outFile.Close()
 
 	chunk := make([]byte, 0x8000)
 	for {
 		n, err := f.Read(chunk)
 		if err != nil && err != io.EOF {
+			outFile.Close()
 			return fmt.Errorf("读取音频数据失败: %v", err)
 		}
 		if n == 0 {
@@ -310,9 +310,13 @@ func dump(filePath, fileNameNoSuffix string) error {
 
 		_, err = outFile.Write(chunk[:n])
 		if err != nil {
+			outFile.Close()
 			return fmt.Errorf("写入音频数据失败: %v", err)
 		}
 	}
+
+	// 关闭输出文件，确保在嵌入封面之前文件已解锁
+	outFile.Close()
 
 	// 嵌入封面
 	if len(imageData) > 0 {
