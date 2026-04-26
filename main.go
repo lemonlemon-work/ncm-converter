@@ -72,14 +72,14 @@ func (a *NCMConverterApp) setupUI() {
 	toolbar := a.createToolbar()
 
 	// 文件表格（包含表头）
-	tableContainer := a.createFileTable()
+	a.createFileTable()
 
 	// 日志区域
 	a.createLogArea()
 
 	// 主布局：垂直分割，表格在上，日志在下
 	split := container.NewVSplit(
-		tableContainer,
+		container.NewBorder(nil, nil, nil, nil, a.fileTable),
 		container.NewBorder(nil, nil, nil, nil, a.logText),
 	)
 	split.Offset = 0.7
@@ -119,26 +119,42 @@ func (a *NCMConverterApp) createToolbar() *fyne.Container {
 	return toolbar
 }
 
-func (a *NCMConverterApp) createFileTable() *fyne.Container {
+func (a *NCMConverterApp) createFileTable() *widget.Table {
 	headers := []string{"ID", "路径", "曲名", "格式", "大小", "封面状态", "转码状态"}
 	
 	a.fileTable = widget.NewTable(
 		func() (int, int) {
 			a.fileListMu.Lock()
 			defer a.fileListMu.Unlock()
-			return len(a.fileList), 7
+			// 第0行是表头，后面是实际数据
+			return len(a.fileList) + 1, 7
 		},
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
 			label := cell.(*widget.Label)
-			a.fileListMu.Lock()
-			defer a.fileListMu.Unlock()
-			if id.Row >= len(a.fileList) {
+			
+			// 第0行是表头
+			if id.Row == 0 {
+				if id.Col < len(headers) {
+					label.TextStyle = fyne.TextStyle{Bold: true}
+					label.SetText(headers[id.Col])
+				}
 				return
 			}
-			file := a.fileList[id.Row]
+			
+			// 实际数据行（从第1行开始）
+			dataRow := id.Row - 1
+			a.fileListMu.Lock()
+			defer a.fileListMu.Unlock()
+			
+			if dataRow >= len(a.fileList) {
+				return
+			}
+			
+			file := a.fileList[dataRow]
+			label.TextStyle = fyne.TextStyle{}
 
 			switch id.Col {
 			case 0:
@@ -170,38 +186,22 @@ func (a *NCMConverterApp) createFileTable() *fyne.Container {
 
 	// 选中事件
 	a.fileTable.OnSelected = func(id widget.TableCellID) {
+		// 忽略表头行的选中
+		if id.Row == 0 {
+			return
+		}
+		
+		dataRow := id.Row - 1
 		a.fileListMu.Lock()
 		defer a.fileListMu.Unlock()
-		if id.Row < len(a.fileList) {
-			a.selectedFile = a.fileList[id.Row]
+		
+		if dataRow >= 0 && dataRow < len(a.fileList) {
+			a.selectedFile = a.fileList[dataRow]
 			a.updateLogDisplay()
 		}
 	}
 	
-	// 创建表头行
-	headerRow := container.NewHBox()
-	columnWidths := []float32{50, 200, 150, 60, 80, 100, 80}
-	
-	for i, header := range headers {
-		headerLabel := widget.NewLabelWithStyle(header, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-		// 创建一个容器来固定宽度
-		headerCell := container.NewHBox(
-			widget.NewLabel(""), // 左边距占位
-			headerLabel,
-			widget.NewLabel(""), // 右边距占位
-		)
-		// 设置最小宽度
-		headerCell.Resize(fyne.NewSize(columnWidths[i], headerLabel.MinSize().Height+4))
-		headerRow.Add(headerCell)
-	}
-	
-	// 创建表头背景
-	headerBg := container.NewPadded(headerRow)
-	
-	// 将表头和表格组合
-	tableContainer := container.NewBorder(headerBg, nil, nil, nil, a.fileTable)
-	
-	return tableContainer
+	return a.fileTable
 }
 
 func (a *NCMConverterApp) createLogArea() {
@@ -252,8 +252,12 @@ func (a *NCMConverterApp) addFiles() {
 		if reader == nil {
 			return
 		}
+		defer func() {
+			if reader != nil {
+				reader.Close()
+			}
+		}()
 		path := reader.URI().Path()
-		reader.Close()
 		a.addFileIfNCM(path)
 	}, a.window)
 	fd.SetFilter(storage.NewExtensionFileFilter([]string{".ncm"}))
