@@ -57,7 +57,7 @@ func NewNCMConverterApp() *NCMConverterApp {
 }
 
 func (a *NCMConverterApp) Run() {
-	a.app = app.New()
+	a.app = app.NewWithID("com.ncm.converter")
 	a.window = a.app.NewWindow("NCM 转换器")
 	a.window.Resize(fyne.NewSize(1000, 700))
 
@@ -71,15 +71,15 @@ func (a *NCMConverterApp) setupUI() {
 	// 顶部工具栏
 	toolbar := a.createToolbar()
 
-	// 文件表格
-	a.createFileTable()
+	// 文件表格（包含表头）
+	tableContainer := a.createFileTable()
 
 	// 日志区域
 	a.createLogArea()
 
-	// 主布局
-	split := container.NewHSplit(
-		container.NewBorder(nil, nil, nil, nil, a.fileTable),
+	// 主布局：垂直分割，表格在上，日志在下
+	split := container.NewVSplit(
+		tableContainer,
 		container.NewBorder(nil, nil, nil, nil, a.logText),
 	)
 	split.Offset = 0.7
@@ -119,7 +119,9 @@ func (a *NCMConverterApp) createToolbar() *fyne.Container {
 	return toolbar
 }
 
-func (a *NCMConverterApp) createFileTable() {
+func (a *NCMConverterApp) createFileTable() *fyne.Container {
+	headers := []string{"ID", "路径", "曲名", "格式", "大小", "封面状态", "转码状态"}
+	
 	a.fileTable = widget.NewTable(
 		func() (int, int) {
 			a.fileListMu.Lock()
@@ -157,18 +159,6 @@ func (a *NCMConverterApp) createFileTable() {
 		},
 	)
 
-	// 设置列标题
-	headers := []string{"ID", "路径", "曲名", "格式", "大小", "封面状态", "转码状态"}
-	a.fileTable.CreateHeader = func() fyne.CanvasObject {
-		return widget.NewLabel("")
-	}
-	a.fileTable.UpdateHeader = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		label := cell.(*widget.Label)
-		if id.Col < len(headers) {
-			label.SetText(headers[id.Col])
-		}
-	}
-
 	// 设置列宽
 	a.fileTable.SetColumnWidth(0, 50)
 	a.fileTable.SetColumnWidth(1, 200)
@@ -187,6 +177,31 @@ func (a *NCMConverterApp) createFileTable() {
 			a.updateLogDisplay()
 		}
 	}
+	
+	// 创建表头行
+	headerRow := container.NewHBox()
+	columnWidths := []float32{50, 200, 150, 60, 80, 100, 80}
+	
+	for i, header := range headers {
+		headerLabel := widget.NewLabelWithStyle(header, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+		// 创建一个容器来固定宽度
+		headerCell := container.NewHBox(
+			widget.NewLabel(""), // 左边距占位
+			headerLabel,
+			widget.NewLabel(""), // 右边距占位
+		)
+		// 设置最小宽度
+		headerCell.Resize(fyne.NewSize(columnWidths[i], headerLabel.MinSize().Height+4))
+		headerRow.Add(headerCell)
+	}
+	
+	// 创建表头背景
+	headerBg := container.NewPadded(headerRow)
+	
+	// 将表头和表格组合
+	tableContainer := container.NewBorder(headerBg, nil, nil, nil, a.fileTable)
+	
+	return tableContainer
 }
 
 func (a *NCMConverterApp) createLogArea() {
