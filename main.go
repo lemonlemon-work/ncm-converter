@@ -321,24 +321,32 @@ func dump(filePath, fileNameNoSuffix string) error {
 	// 嵌入封面
 	if len(imageData) > 0 {
 		fmt.Printf("使用NCM文件中提取的封面图片，大小: %d 字节\n", len(imageData))
-		embedCover(outputFilePath, imageData, metadata.Format)
+		if !embedCover(outputFilePath, imageData, metadata.Format) {
+			fmt.Printf("封面嵌入失败，音频文件已保存: %s\n", outputFilePath)
+		}
 	} else if metadata.AlbumPic != "" {
 		fmt.Println("NCM文件中没有找到封面图片，尝试从网络下载...")
 		resp, err := http.Get(metadata.AlbumPic)
-		if err == nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			coverData, err := io.ReadAll(resp.Body)
-			if err == nil {
-				fmt.Printf("从网络下载封面图片成功，大小: %d 字节\n", len(coverData))
-				embedCover(outputFilePath, coverData, metadata.Format)
-			}
+		if err != nil {
+			fmt.Printf("从网络下载封面图片出错: %v\n", err)
 		} else {
-			if err != nil {
-				fmt.Printf("从网络下载封面图片出错: %v\n", err)
-			} else {
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
 				fmt.Printf("从网络下载封面图片失败，状态码: %d\n", resp.StatusCode)
+			} else {
+				coverData, err := io.ReadAll(resp.Body)
+				if err != nil {
+					fmt.Printf("读取网络封面图片数据失败: %v\n", err)
+				} else {
+					fmt.Printf("从网络下载封面图片成功，大小: %d 字节\n", len(coverData))
+					if !embedCover(outputFilePath, coverData, metadata.Format) {
+						fmt.Printf("封面嵌入失败，音频文件已保存: %s\n", outputFilePath)
+					}
+				}
 			}
 		}
+	} else {
+		fmt.Printf("未找到封面图片，音频文件已保存（无封面）: %s\n", outputFilePath)
 	}
 
 	return nil
@@ -352,16 +360,20 @@ func embedCover(audioPath string, coverData []byte, format string) bool {
 
 	format = strings.ToLower(format)
 
-	// 检查是否是支持的格式
-	supportedFormats := map[string]bool{
+	// 检查是否是支持封面嵌入的格式
+	// 注意：WAV 和 APE 格式通常不支持嵌入封面
+	supportedEmbedFormats := map[string]bool{
 		"mp3":  true,
 		"flac": true,
-		"wav":  true,
-		"ape":  true,
 	}
 
-	if !supportedFormats[format] {
-		fmt.Printf("不支持的音频格式: %s，封面嵌入跳过\n", format)
+	if !supportedEmbedFormats[format] {
+		fmt.Printf("%s格式不支持嵌入封面，将封面保存为单独文件\n", strings.ToUpper(format))
+		coverPath := audioPath + ".cover.jpg"
+		if err := os.WriteFile(coverPath, coverData, 0644); err == nil {
+			fmt.Printf("封面图片已保存到: %s\n", coverPath)
+			return true
+		}
 		return false
 	}
 
@@ -384,24 +396,53 @@ func embedCover(audioPath string, coverData []byte, format string) bool {
 		fmt.Printf("保存临时封面文件失败: %v\n", err)
 		return false
 	}
-	defer os.Remove(tempCoverPath) // 清理临时文件
+	defer func() {
+		// 清理临时封面文件
+		if _, err := os.Stat(tempCoverPath); err == nil {
+			os.Remove(tempCoverPath)
+		}
+	}()
 
 	// 创建临时输出文件
 	tempOutputPath := audioPath + ".temp_output" + filepath.Ext(audioPath)
 
-	// 统一的ffmpeg命令，适用于所有四种格式
-	cmd := exec.Command("ffmpeg", "-i", audioPath, "-i", tempCoverPath,
-		"-map", "0:a", "-map", "1:v", "-c", "copy",
-		"-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)",
-		"-disposition:v", "attached_pic", "-y", tempOutputPath)
+	// 确保临时输出文件不存在（避免重命名问题）
+	if _, err := os.Stat(tempOutputPath); err == nil {
+		os.Remove(tempOutputPath)
+	}
+
+	// 根据格式选择合适的ffmpeg命令
+	var cmd *exec.Cmd
+	if format == "mp3" {
+		// MP3格式使用id3v2标签
+		cmd = exec.Command("ffmpeg", "-i", audioPath, "-i", tempCoverPath,
+			"-map", "0:a", "-map", "1:v", "-c", "copy",
+			"-id3v2_version", "3",
+			"-metadata:s:v", "title=Album cover",
+			"-metadata:s:v", "comment=Cover (front)",
+			"-disposition:v", "attached_pic",
+			"-y", tempOutputPath)
+	} else {
+		// FLAC格式
+		cmd = exec.Command("ffmpeg", "-i", audioPath, "-i", tempCoverPath,
+			"-map", "0:a", "-map", "1:v", "-c", "copy",
+			"-metadata:s:v", "title=Album cover",
+			"-metadata:s:v", "comment=Cover (front)",
+			"-disposition:v", "attached_pic",
+			"-y", tempOutputPath)
+	}
 
 	// 捕获输出以便调试
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	fmt.Printf("执行ffmpeg命令嵌入封面...\n")
 	err = cmd.Run()
 	if err != nil {
-		fmt.Printf("ffmpeg执行失败: %v\n%s\n", err, stderr.String())
+		fmt.Printf("ffmpeg执行失败: %v\n", err)
+		fmt.Printf("ffmpeg stdout: %s\n", stdout.String())
+		fmt.Printf("ffmpeg stderr: %s\n", stderr.String())
 		// 如果ffmpeg失败，尝试保存封面到文件
 		coverPath := audioPath + ".cover.jpg"
 		if err := os.WriteFile(coverPath, coverData, 0644); err == nil {
@@ -411,10 +452,26 @@ func embedCover(audioPath string, coverData []byte, format string) bool {
 		return false
 	}
 
+	// 检查临时输出文件是否创建成功
+	if _, err := os.Stat(tempOutputPath); os.IsNotExist(err) {
+		fmt.Printf("ffmpeg执行成功但未生成输出文件，可能是封面嵌入不支持\n")
+		// 尝试保存封面到文件
+		coverPath := audioPath + ".cover.jpg"
+		if err := os.WriteFile(coverPath, coverData, 0644); err == nil {
+			fmt.Printf("封面图片已保存到: %s\n", coverPath)
+			return true
+		}
+		return false
+	}
+
 	// 替换原文件
+	fmt.Printf("替换原文件...\n")
 	if err := os.Remove(audioPath); err != nil {
 		fmt.Printf("删除原文件失败: %v\n", err)
-		os.Remove(tempOutputPath)
+		// 清理临时输出文件
+		if _, err := os.Stat(tempOutputPath); err == nil {
+			os.Remove(tempOutputPath)
+		}
 		return false
 	}
 
@@ -423,7 +480,7 @@ func embedCover(audioPath string, coverData []byte, format string) bool {
 		return false
 	}
 
-	fmt.Printf("封面已嵌入到%s文件: %s\n", strings.ToUpper(format), audioPath)
+	fmt.Printf("封面已成功嵌入到%s文件: %s\n", strings.ToUpper(format), audioPath)
 	return true
 }
 
