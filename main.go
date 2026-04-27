@@ -239,7 +239,10 @@ func (a *NCMConverterApp) addDirectory() {
 			return
 		}
 		path := list.Path()
-		a.addFilesFromDirectory(path)
+		// 在后台 goroutine 中执行耗时操作
+		go func() {
+			a.addFilesFromDirectory(path)
+		}()
 	}, a.window)
 }
 
@@ -252,13 +255,15 @@ func (a *NCMConverterApp) addFiles() {
 		if reader == nil {
 			return
 		}
-		defer func() {
-			if reader != nil {
-				reader.Close()
-			}
-		}()
+		// 先获取路径
 		path := reader.URI().Path()
-		a.addFileIfNCM(path)
+		// 立即关闭 reader，因为我们只需要路径
+		reader.Close()
+		
+		// 在后台 goroutine 中处理文件
+		go func(filePath string) {
+			a.addFileIfNCM(filePath)
+		}(path)
 	}, a.window)
 	fd.SetFilter(storage.NewExtensionFileFilter([]string{".ncm"}))
 	fd.Show()
@@ -275,30 +280,42 @@ func (a *NCMConverterApp) addAppDirectory() {
 }
 
 func (a *NCMConverterApp) addFilesFromDirectory(dir string) {
-	ncmFiles, err := converter.FindNCMFiles(dir)
-	if err != nil {
-		dialog.ShowError(fmt.Errorf("遍历目录失败: %v", err), a.window)
-		return
-	}
+	// 在后台 goroutine 中执行文件遍历
+	go func() {
+		ncmFiles, err := converter.FindNCMFiles(dir)
+		
+		// 所有 UI 操作都在主线程中执行
+		fyne.Do(func() {
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("遍历目录失败: %v", err), a.window)
+				return
+			}
 
-	if len(ncmFiles) == 0 {
-		dialog.ShowInformation("提示", "没有找到NCM文件", a.window)
-		return
-	}
+			if len(ncmFiles) == 0 {
+				dialog.ShowInformation("提示", "没有找到NCM文件", a.window)
+				return
+			}
 
-	for _, filePath := range ncmFiles {
-		a.addFileToList(filePath)
-	}
+			for _, filePath := range ncmFiles {
+				a.addFileToList(filePath)
+			}
 
-	a.addLog(fmt.Sprintf("从目录 %s 添加了 %d 个NCM文件", dir, len(ncmFiles)))
+			a.addLog(fmt.Sprintf("从目录 %s 添加了 %d 个NCM文件", dir, len(ncmFiles)))
+		})
+	}()
 }
 
 func (a *NCMConverterApp) addFileIfNCM(filePath string) {
 	if strings.EqualFold(filepath.Ext(filePath), ".ncm") {
-		a.addFileToList(filePath)
-		a.addLog(fmt.Sprintf("添加文件: %s", filePath))
+		// 在主线程中执行 UI 操作
+		fyne.Do(func() {
+			a.addFileToList(filePath)
+			a.addLog(fmt.Sprintf("添加文件: %s", filePath))
+		})
 	} else {
-		a.addLog(fmt.Sprintf("跳过非NCM文件: %s", filePath))
+		fyne.Do(func() {
+			a.addLog(fmt.Sprintf("跳过非NCM文件: %s", filePath))
+		})
 	}
 }
 
