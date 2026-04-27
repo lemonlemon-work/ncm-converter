@@ -213,19 +213,37 @@ func (a *NCMConverterApp) createLogArea() {
 
 func (a *NCMConverterApp) setupDragAndDrop() {
 	a.window.SetOnDropped(func(pos fyne.Position, uris []fyne.URI) {
-		for _, uri := range uris {
-			path := uri.Path()
-			info, err := os.Stat(path)
-			if err != nil {
-				a.addLog(fmt.Sprintf("无法访问路径: %s, 错误: %v", path, err))
-				continue
+		// 收集所有文件和目录，避免阻塞主线程
+		go func() {
+			var files []string
+			var dirs []string
+
+			for _, uri := range uris {
+				path := uri.Path()
+				info, err := os.Stat(path)
+				if err != nil {
+					fyne.Do(func() {
+						a.addLog(fmt.Sprintf("无法访问路径: %s, 错误: %v", path, err))
+					})
+					continue
+				}
+				if info.IsDir() {
+					dirs = append(dirs, path)
+				} else {
+					files = append(files, path)
+				}
 			}
-			if info.IsDir() {
-				a.addFilesFromDirectory(path)
-			} else {
-				a.addFileIfNCM(path)
+
+			// 批量处理文件
+			if len(files) > 0 {
+				a.addFilesBatch(files)
 			}
-		}
+
+			// 处理目录（每个目录单独处理，因为目录需要遍历）
+			for _, dir := range dirs {
+				a.addFilesFromDirectory(dir)
+			}
+		}()
 	})
 }
 
@@ -282,7 +300,7 @@ func (a *NCMConverterApp) addAppDirectory() {
 func (a *NCMConverterApp) addFilesFromDirectory(dir string) {
 	// 在后台 goroutine 中执行所有文件操作
 	go func() {
-		// 1. 遍历目录查找NCM文件
+		// 第一阶段：快速扫描目录获取 NCM 文件列表
 		ncmFiles, err := converter.FindNCMFiles(dir)
 		if err != nil {
 			fyne.Do(func() {
@@ -298,121 +316,226 @@ func (a *NCMConverterApp) addFilesFromDirectory(dir string) {
 			return
 		}
 
-		// 2. 在后台准备所有文件信息（获取文件大小等）
-		var newFiles []*models.FileInfo
+		// 第二阶段：过滤掉已存在的文件
 		a.fileListMu.Lock()
-		currentID := a.nextID
 		existingPaths := make(map[string]bool)
 		for _, f := range a.fileList {
 			existingPaths[f.Path] = true
 		}
 		a.fileListMu.Unlock()
 
+		var newFilePaths []string
 		for _, filePath := range ncmFiles {
-			// 检查是否已存在
-			if existingPaths[filePath] {
-				continue
+			if !existingPaths[filePath] {
+				newFilePaths = append(newFilePaths, filePath)
+				existingPaths[filePath] = true
 			}
-
-			// 在后台获取文件大小
-			size, err := converter.GetFileSize(filePath)
-			if err != nil {
-				size = 0
-			}
-
-			fileInfo := &models.FileInfo{
-				ID:            currentID,
-				Path:          filePath,
-				SongName:      converter.GetSongName(filePath),
-				Format:        "",
-				Size:          size,
-				CoverStatus:   models.CoverStatusNotSupported,
-				ConvertStatus: models.ConvertStatusWaiting,
-				Logs:          []string{},
-			}
-
-			newFiles = append(newFiles, fileInfo)
-			currentID++
-			existingPaths[filePath] = true
 		}
 
-		// 3. 在主线程中一次性更新UI
+		if len(newFilePaths) == 0 {
+			fyne.Do(func() {
+				a.addLog(fmt.Sprintf("目录 %s 中没有新的NCM文件", dir))
+			})
+			return
+		}
+
+		// 第三阶段：读取元信息（文件大小等）
+		// 使用限制并发数的方式，避免同时打开太多文件
+		maxConcurrency := 5
+		semaphore := make(chan struct{}, maxConcurrency)
+		var wg sync.WaitGroup
+		var newFilesMu sync.Mutex
+		var newFiles []*models.FileInfo
+
+		a.fileListMu.Lock()
+		currentID := a.nextID
+		a.fileListMu.Unlock()
+
+		for i, filePath := range newFilePaths {
+			wg.Add(1)
+			go func(fp string, idx int, startID int) {
+				defer wg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				// 读取文件大小
+				size, err := converter.GetFileSize(fp)
+				if err != nil {
+					size = 0
+				}
+
+				fileInfo := &models.FileInfo{
+					ID:            startID + idx,
+					Path:          fp,
+					SongName:      converter.GetSongName(fp),
+					Format:        "",
+					Size:          size,
+					CoverStatus:   models.CoverStatusNotSupported,
+					ConvertStatus: models.ConvertStatusWaiting,
+					Logs:          []string{},
+				}
+
+				newFilesMu.Lock()
+				newFiles = append(newFiles, fileInfo)
+				newFilesMu.Unlock()
+			}(filePath, i, currentID)
+		}
+
+		wg.Wait()
+
+		// 第四阶段：在主线程中一次性更新UI
 		if len(newFiles) > 0 {
 			fyne.Do(func() {
 				a.fileListMu.Lock()
-				a.fileList = append(a.fileList, newFiles...)
-				a.nextID = currentID
+				// 再次过滤掉可能在后台处理时已被添加的文件
+				existingPaths := make(map[string]bool)
+				for _, f := range a.fileList {
+					existingPaths[f.Path] = true
+				}
+
+				var filesToAdd []*models.FileInfo
+				for _, f := range newFiles {
+					if !existingPaths[f.Path] {
+						filesToAdd = append(filesToAdd, f)
+						existingPaths[f.Path] = true
+					}
+				}
+
+				if len(filesToAdd) > 0 {
+					a.fileList = append(a.fileList, filesToAdd...)
+					// 更新 nextID
+					maxID := a.nextID
+					for _, f := range filesToAdd {
+						if f.ID >= maxID {
+							maxID = f.ID + 1
+						}
+					}
+					a.nextID = maxID
+				}
 				a.fileListMu.Unlock()
 
 				// 只刷新一次表格
 				a.fileTable.Refresh()
-				a.addLog(fmt.Sprintf("从目录 %s 添加了 %d 个NCM文件", dir, len(newFiles)))
+				a.addLog(fmt.Sprintf("从目录 %s 添加了 %d 个NCM文件", dir, len(filesToAdd)))
+			})
+		}
+	}()
+}
+
+// addFilesBatch 批量添加多个文件，避免为每个文件创建 goroutine
+func (a *NCMConverterApp) addFilesBatch(filePaths []string) {
+	if len(filePaths) == 0 {
+		return
+	}
+
+	// 在后台 goroutine 中处理
+	go func() {
+		// 第一阶段：过滤掉已存在的文件和非NCM文件
+		a.fileListMu.Lock()
+		existingPaths := make(map[string]bool)
+		for _, f := range a.fileList {
+			existingPaths[f.Path] = true
+		}
+		a.fileListMu.Unlock()
+
+		var newFilePaths []string
+		for _, filePath := range filePaths {
+			if !strings.EqualFold(filepath.Ext(filePath), ".ncm") {
+				continue
+			}
+			if !existingPaths[filePath] {
+				newFilePaths = append(newFilePaths, filePath)
+				existingPaths[filePath] = true
+			}
+		}
+
+		if len(newFilePaths) == 0 {
+			return
+		}
+
+		// 第二阶段：读取元信息（文件大小等）
+		// 使用限制并发数的方式
+		maxConcurrency := 5
+		semaphore := make(chan struct{}, maxConcurrency)
+		var wg sync.WaitGroup
+		var newFilesMu sync.Mutex
+		var newFiles []*models.FileInfo
+
+		a.fileListMu.Lock()
+		currentID := a.nextID
+		a.fileListMu.Unlock()
+
+		for i, filePath := range newFilePaths {
+			wg.Add(1)
+			go func(fp string, idx int, startID int) {
+				defer wg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				size, err := converter.GetFileSize(fp)
+				if err != nil {
+					size = 0
+				}
+
+				fileInfo := &models.FileInfo{
+					ID:            startID + idx,
+					Path:          fp,
+					SongName:      converter.GetSongName(fp),
+					Format:        "",
+					Size:          size,
+					CoverStatus:   models.CoverStatusNotSupported,
+					ConvertStatus: models.ConvertStatusWaiting,
+					Logs:          []string{},
+				}
+
+				newFilesMu.Lock()
+				newFiles = append(newFiles, fileInfo)
+				newFilesMu.Unlock()
+			}(filePath, i, currentID)
+		}
+
+		wg.Wait()
+
+		// 第三阶段：在主线程中一次性更新UI
+		if len(newFiles) > 0 {
+			fyne.Do(func() {
+				a.fileListMu.Lock()
+				// 再次过滤
+				existingPaths := make(map[string]bool)
+				for _, f := range a.fileList {
+					existingPaths[f.Path] = true
+				}
+
+				var filesToAdd []*models.FileInfo
+				for _, f := range newFiles {
+					if !existingPaths[f.Path] {
+						filesToAdd = append(filesToAdd, f)
+						existingPaths[f.Path] = true
+					}
+				}
+
+				if len(filesToAdd) > 0 {
+					a.fileList = append(a.fileList, filesToAdd...)
+					maxID := a.nextID
+					for _, f := range filesToAdd {
+						if f.ID >= maxID {
+							maxID = f.ID + 1
+						}
+					}
+					a.nextID = maxID
+				}
+				a.fileListMu.Unlock()
+
+				a.fileTable.Refresh()
+				a.addLog(fmt.Sprintf("批量添加了 %d 个NCM文件", len(filesToAdd)))
 			})
 		}
 	}()
 }
 
 func (a *NCMConverterApp) addFileIfNCM(filePath string) {
-	if !strings.EqualFold(filepath.Ext(filePath), ".ncm") {
-		fyne.Do(func() {
-			a.addLog(fmt.Sprintf("跳过非NCM文件: %s", filePath))
-		})
-		return
-	}
-
-	// 在后台 goroutine 中处理文件
-	go func(fp string) {
-		// 检查是否已存在
-		a.fileListMu.Lock()
-		exists := false
-		for _, existing := range a.fileList {
-			if existing.Path == fp {
-				exists = true
-				break
-			}
-		}
-		currentID := a.nextID
-		a.fileListMu.Unlock()
-
-		if exists {
-			return
-		}
-
-		// 在后台获取文件大小
-		size, err := converter.GetFileSize(fp)
-		if err != nil {
-			size = 0
-		}
-
-		fileInfo := &models.FileInfo{
-			ID:            currentID,
-			Path:          fp,
-			SongName:      converter.GetSongName(fp),
-			Format:        "",
-			Size:          size,
-			CoverStatus:   models.CoverStatusNotSupported,
-			ConvertStatus: models.ConvertStatusWaiting,
-			Logs:          []string{},
-		}
-
-		// 在主线程中更新UI
-		fyne.Do(func() {
-			a.fileListMu.Lock()
-			// 再次检查是否已存在（可能在后台处理时已被添加）
-			for _, existing := range a.fileList {
-				if existing.Path == fp {
-					a.fileListMu.Unlock()
-					return
-				}
-			}
-			a.fileList = append(a.fileList, fileInfo)
-			a.nextID = currentID + 1
-			a.fileListMu.Unlock()
-
-			a.fileTable.Refresh()
-			a.addLog(fmt.Sprintf("添加文件: %s", fp))
-		})
-	}(filePath)
+	// 单个文件也使用批量处理函数，保持一致性
+	a.addFilesBatch([]string{filePath})
 }
 
 func (a *NCMConverterApp) addFileToList(filePath string) {
