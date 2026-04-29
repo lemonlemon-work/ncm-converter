@@ -1,0 +1,32 @@
+# 编译产物
+build/bin/
+*.exe
+
+# 前端依赖
+frontend/node_modules/
+
+# 前端构建产物
+frontend/dist/
+
+# Wails 自动生成的绑定
+frontend/wailsjs/
+
+# Go 编译缓存
+*.test
+*.prof
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
