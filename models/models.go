@@ -28,14 +28,14 @@ const (
 
 // FileInfo 表示一个待处理的文件信息
 type FileInfo struct {
-	ID            int
-	Path          string
-	SongName      string
-	Format        string
-	Size          int64
-	CoverStatus   CoverStatus
-	ConvertStatus ConvertStatus
-	Logs          []string
+	ID            int           `json:"id"`
+	Path          string        `json:"path"`
+	SongName      string        `json:"songName"`
+	Format        string        `json:"format"`
+	Size          int64         `json:"size"`
+	CoverStatus   CoverStatus   `json:"coverStatus"`
+	ConvertStatus ConvertStatus `json:"convertStatus"`
+	Logs          []string      `json:"logs"`
 	mu            sync.Mutex
 }
 
@@ -57,9 +57,9 @@ func (fi *FileInfo) GetLogs() []string {
 
 // AppConfig 表示应用程序配置
 type AppConfig struct {
-	AutoDownloadCover  bool
-	MaxDownloadConcurrency int
-	MaxConvertConcurrency  int
+	AutoDownloadCover      bool `json:"autoDownloadCover"`
+	MaxDownloadConcurrency int  `json:"maxDownloadConcurrency"`
+	MaxConvertConcurrency  int  `json:"maxConvertConcurrency"`
 }
 
 // DefaultConfig 返回默认配置
@@ -73,6 +73,6 @@ func DefaultConfig() *AppConfig {
 
 // ConvertResult 表示转换结果统计
 type ConvertResult struct {
-	SuccessCount int
-	FailedCount  int
+	SuccessCount int `json:"successCount"`
+	FailedCount  int `json:"failedCount"`
 }
