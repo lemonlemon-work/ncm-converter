@@ -31,6 +31,7 @@ const closeResult = document.getElementById('closeResult');
 const okResult = document.getElementById('okResult');
 const successCount = document.getElementById('successCount');
 const failedCount = document.getElementById('failedCount');
+const skippedCount = document.getElementById('skippedCount');
 
 // 右键菜单
 const contextMenu = document.createElement('div');
@@ -106,6 +107,7 @@ function renderFileTable() {
             case '转码完成':
             case '合并完成': statusClass = 'status-converted'; break;
             case '错误': statusClass = 'status-error'; break;
+            case '已跳过': statusClass = 'status-skipped'; break;
         }
 
         // 格式化文件大小
@@ -336,6 +338,7 @@ function listenToEvents() {
         // 显示结果
         successCount.textContent = result.successCount;
         failedCount.textContent = result.failedCount;
+        skippedCount.textContent = result.skippedCount;
         resultModal.classList.remove('hidden');
     });
 

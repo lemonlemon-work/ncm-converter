@@ -177,6 +177,16 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 			ncmInfo, err := converter.GetNCMFileInfo(fp)
 			if err != nil {
 				size, _ := converter.GetFileSize(fp)
+				targetExists, _ := converter.CheckTargetFileExists(fp, "")
+				var convertStatus models.ConvertStatus
+				var logs []string
+				if targetExists {
+					convertStatus = models.ConvertStatusSkipped
+					logs = []string{fmt.Sprintf("目标文件已存在，跳过转换: %v", err)}
+				} else {
+					convertStatus = models.ConvertStatusWaiting
+					logs = []string{fmt.Sprintf("解析文件信息失败: %v", err)}
+				}
 				fileInfo := &models.FileInfo{
 					ID:            startID + idx,
 					Path:          fp,
@@ -184,8 +194,8 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 					Format:        "",
 					Size:          size,
 					CoverStatus:   models.CoverStatusNotSupported,
-					ConvertStatus: models.ConvertStatusWaiting,
-					Logs:          []string{fmt.Sprintf("解析文件信息失败: %v", err)},
+					ConvertStatus: convertStatus,
+					Logs:          logs,
 				}
 				newFilesMu.Lock()
 				newFiles = append(newFiles, fileInfo)
@@ -198,6 +208,17 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 				size = 0
 			}
 
+			targetExists, _ := converter.CheckTargetFileExists(fp, ncmInfo.Format)
+			var convertStatus models.ConvertStatus
+			var logs []string
+			if targetExists {
+				convertStatus = models.ConvertStatusSkipped
+				logs = []string{"目标文件已存在，跳过转换"}
+			} else {
+				convertStatus = models.ConvertStatusWaiting
+				logs = []string{}
+			}
+
 			fileInfo := &models.FileInfo{
 				ID:            startID + idx,
 				Path:          fp,
@@ -205,8 +226,8 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 				Format:        ncmInfo.Format,
 				Size:          size,
 				CoverStatus:   ncmInfo.CoverStatus,
-				ConvertStatus: models.ConvertStatusWaiting,
-				Logs:          []string{},
+				ConvertStatus: convertStatus,
+				Logs:          logs,
 			}
 
 			newFilesMu.Lock()
@@ -302,7 +323,7 @@ func (a *App) StartConversion() error {
 		)
 
 		a.isProcessing = false
-		a.addLog(fmt.Sprintf("转换完成 - 成功: %d, 失败: %d", result.SuccessCount, result.FailedCount))
+		a.addLog(fmt.Sprintf("转换完成 - 成功: %d, 失败: %d, 跳过: %d", result.SuccessCount, result.FailedCount, result.SkippedCount))
 		runtime.EventsEmit(a.ctx, "conversion-completed", result)
 	}()
 

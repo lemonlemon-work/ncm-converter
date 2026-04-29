@@ -19,11 +19,12 @@ const (
 type ConvertStatus string
 
 const (
-	ConvertStatusWaiting   ConvertStatus = "等待转码"
+	ConvertStatusWaiting    ConvertStatus = "等待转码"
 	ConvertStatusConverting ConvertStatus = "转码中"
 	ConvertStatusConverted  ConvertStatus = "转码完成"
 	ConvertStatusMerged     ConvertStatus = "合并完成"
 	ConvertStatusError      ConvertStatus = "错误"
+	ConvertStatusSkipped    ConvertStatus = "已跳过"
 )
 
 // FileInfo 表示一个待处理的文件信息
@@ -75,4 +76,5 @@ func DefaultConfig() *AppConfig {
 type ConvertResult struct {
 	SuccessCount int `json:"successCount"`
 	FailedCount  int `json:"failedCount"`
+	SkippedCount int `json:"skippedCount"`
 }

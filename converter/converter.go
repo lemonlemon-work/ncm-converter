@@ -506,17 +506,32 @@ func GetSongName(filePath string) string {
 }
 
 // ProcessFilesConcurrently 并发处理多个文件
-func (c *Converter) ProcessFilesConcurrently(fileInfos []*models.FileInfo, 
-	logCallback func(string), 
+func (c *Converter) ProcessFilesConcurrently(fileInfos []*models.FileInfo,
+	logCallback func(string),
 	progressCallback func(*models.FileInfo),
 	stopChan <-chan struct{}) *models.ConvertResult {
-	
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, c.config.MaxConvertConcurrency)
 	var result models.ConvertResult
 	var resultMu sync.Mutex
 
+	var filesToProcess []*models.FileInfo
+
 	for _, fileInfo := range fileInfos {
+		if fileInfo.ConvertStatus == models.ConvertStatusSkipped {
+			resultMu.Lock()
+			result.SkippedCount++
+			resultMu.Unlock()
+			logCallback(fmt.Sprintf("目标文件已存在，跳过转换: %s", fileInfo.Path))
+			continue
+		}
+		filesToProcess = append(filesToProcess, fileInfo)
+	}
+
+	logCallback(fmt.Sprintf("待处理文件: %d 个（已跳过 %d 个）", len(filesToProcess), result.SkippedCount))
+
+	for _, fileInfo := range filesToProcess {
 		select {
 		case <-stopChan:
 			logCallback("转换任务已停止")
@@ -710,4 +725,29 @@ func GetNCMFileInfo(filePath string) (*NCMFileInfo, error) {
 	}
 
 	return result, nil
+}
+
+// CheckTargetFileExists 检测目标文件是否已存在
+// filePath: NCM文件路径
+// format: 音频格式（从元数据中获取，如果为空则尝试所有格式）
+func CheckTargetFileExists(filePath, format string) (exists bool, targetPath string) {
+	baseName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	dir := filepath.Dir(filePath)
+
+	if format != "" {
+		targetPath = filepath.Join(dir, baseName+"."+format)
+		if _, err := os.Stat(targetPath); err == nil {
+			return true, targetPath
+		}
+		return false, ""
+	}
+
+	for _, suffix := range musicSuffixList {
+		targetPath = filepath.Join(dir, baseName+"."+suffix)
+		if _, err := os.Stat(targetPath); err == nil {
+			return true, targetPath
+		}
+	}
+
+	return false, ""
 }
