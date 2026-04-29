@@ -42,35 +42,29 @@ func NewConverter(config *models.AppConfig) *Converter {
 // ProcessFile 处理单个NCM文件
 func (c *Converter) ProcessFile(fileInfo *models.FileInfo, logCallback func(string)) error {
 	filePath := fileInfo.Path
-	fileInfo.ConvertStatus = models.ConvertStatusConverting
-	logCallback(fmt.Sprintf(">>>>>>>>>>>>>>>> 当前文件: %s", filePath))
 
-	baseName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
-	dir := filepath.Dir(filePath)
-	exists := false
-
-	for _, suffix := range musicSuffixList {
-		checkPath := filepath.Join(dir, baseName+"."+suffix)
-		if _, err := os.Stat(checkPath); err == nil {
-			exists = true
-			break
-		}
-	}
-
-	if exists {
-		logCallback(fmt.Sprintf(">>>>>>>>>>>>>>> 同名文件跳过: %s", filePath))
-		fileInfo.ConvertStatus = models.ConvertStatusConverted
+	if fileInfo.ConvertStatus == models.ConvertStatusConverted {
+		logCallback(fmt.Sprintf("文件已转换完成，跳过: %s", filePath))
 		return nil
 	}
 
-	logCallback(fmt.Sprintf(">>>>>>>>>>>>>>> 开始转码文件: %s", filePath))
+	if fileInfo.ConvertStatus == models.ConvertStatusConverting {
+		logCallback(fmt.Sprintf("文件正在转换中，跳过: %s", filePath))
+		return nil
+	}
+
+	fileInfo.ConvertStatus = models.ConvertStatusConverting
+	logCallback(fmt.Sprintf("开始转换文件: %s", filePath))
+
+	baseName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+
 	err := c.dump(fileInfo, baseName, logCallback)
 	if err != nil {
-		logCallback(fmt.Sprintf("转码文件失败: %s error: %v", filePath, err))
+		logCallback(fmt.Sprintf("转换文件失败: %s, 错误: %v", filePath, err))
 		fileInfo.ConvertStatus = models.ConvertStatusError
 		return err
 	} else {
-		logCallback(fmt.Sprintf(">>>>>>>>>>>>>>> 转码文件成功: %s", filePath))
+		logCallback(fmt.Sprintf("转换文件成功: %s", filePath))
 		fileInfo.ConvertStatus = models.ConvertStatusConverted
 		return nil
 	}
