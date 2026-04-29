@@ -174,6 +174,25 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
+			ncmInfo, err := converter.GetNCMFileInfo(fp)
+			if err != nil {
+				size, _ := converter.GetFileSize(fp)
+				fileInfo := &models.FileInfo{
+					ID:            startID + idx,
+					Path:          fp,
+					SongName:      converter.GetSongName(fp),
+					Format:        "",
+					Size:          size,
+					CoverStatus:   models.CoverStatusNotSupported,
+					ConvertStatus: models.ConvertStatusWaiting,
+					Logs:          []string{fmt.Sprintf("解析文件信息失败: %v", err)},
+				}
+				newFilesMu.Lock()
+				newFiles = append(newFiles, fileInfo)
+				newFilesMu.Unlock()
+				return
+			}
+
 			size, err := converter.GetFileSize(fp)
 			if err != nil {
 				size = 0
@@ -182,10 +201,10 @@ func (a *App) addFilesBatch(filePaths []string) ([]string, error) {
 			fileInfo := &models.FileInfo{
 				ID:            startID + idx,
 				Path:          fp,
-				SongName:      converter.GetSongName(fp),
-				Format:        "",
+				SongName:      ncmInfo.SongName,
+				Format:        ncmInfo.Format,
 				Size:          size,
-				CoverStatus:   models.CoverStatusNotSupported,
+				CoverStatus:   ncmInfo.CoverStatus,
 				ConvertStatus: models.ConvertStatusWaiting,
 				Logs:          []string{},
 			}

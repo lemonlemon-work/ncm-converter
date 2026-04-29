@@ -564,3 +564,156 @@ func (c *Converter) ProcessFilesConcurrently(fileInfos []*models.FileInfo,
 	wg.Wait()
 	return &result
 }
+
+// NCMFileInfo 包含从NCM文件中提取的快速信息
+type NCMFileInfo struct {
+	SongName    string
+	Format      string
+	CoverStatus models.CoverStatus
+	HasCover    bool
+	CoverURL    string
+}
+
+// GetNCMFileInfo 快速解析NCM文件，获取歌曲信息和封面状态
+func GetNCMFileInfo(filePath string) (*NCMFileInfo, error) {
+	coreKey := []byte{0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57}
+	metaKey := []byte{0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28}
+
+	result := &NCMFileInfo{
+		SongName:    GetSongName(filePath),
+		Format:      "",
+		CoverStatus: models.CoverStatusNotSupported,
+		HasCover:    false,
+		CoverURL:    "",
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return result, fmt.Errorf("无法打开文件: %v", err)
+	}
+	defer f.Close()
+
+	header := make([]byte, 8)
+	_, err = io.ReadFull(f, header)
+	if err != nil {
+		return result, fmt.Errorf("读取头部失败: %v", err)
+	}
+	if !bytes.Equal(header, []byte("CTENFDAM")) {
+		return result, fmt.Errorf("不是有效的NCM文件")
+	}
+
+	_, err = f.Seek(2, io.SeekCurrent)
+	if err != nil {
+		return result, fmt.Errorf("跳过字节失败: %v", err)
+	}
+
+	keyLengthBytes := make([]byte, 4)
+	_, err = io.ReadFull(f, keyLengthBytes)
+	if err != nil {
+		return result, fmt.Errorf("读取key长度失败: %v", err)
+	}
+	keyLength := binary.LittleEndian.Uint32(keyLengthBytes)
+
+	keyData := make([]byte, keyLength)
+	_, err = io.ReadFull(f, keyData)
+	if err != nil {
+		return result, fmt.Errorf("读取key数据失败: %v", err)
+	}
+
+	for i := range keyData {
+		keyData[i] ^= 0x64
+	}
+
+	keyData, err = aesECBDecrypt(coreKey, keyData)
+	if err != nil {
+		return result, fmt.Errorf("解密key数据失败: %v", err)
+	}
+
+	keyData = pkcs7Unpad(keyData)
+	if len(keyData) > 17 {
+		keyData = keyData[17:]
+	}
+
+	metaLengthBytes := make([]byte, 4)
+	_, err = io.ReadFull(f, metaLengthBytes)
+	if err != nil {
+		return result, fmt.Errorf("读取元数据长度失败: %v", err)
+	}
+	metaLength := binary.LittleEndian.Uint32(metaLengthBytes)
+
+	var metadata NCMMetadata
+
+	if metaLength > 0 {
+		metaData := make([]byte, metaLength)
+		_, err = io.ReadFull(f, metaData)
+		if err != nil {
+			return result, fmt.Errorf("读取元数据失败: %v", err)
+		}
+
+		for i := range metaData {
+			metaData[i] ^= 0x63
+		}
+
+		if len(metaData) > 22 {
+			metaData = metaData[22:]
+			decodedMeta := make([]byte, base64.StdEncoding.DecodedLen(len(metaData)))
+			n, err := base64.StdEncoding.Decode(decodedMeta, metaData)
+			if err != nil {
+				return result, fmt.Errorf("Base64解码元数据失败: %v", err)
+			}
+			metaData = decodedMeta[:n]
+
+			metaData, err = aesECBDecrypt(metaKey, metaData)
+			if err != nil {
+				return result, fmt.Errorf("解密元数据失败: %v", err)
+			}
+
+			metaData = pkcs7Unpad(metaData)
+			if len(metaData) > 6 {
+				metaData = metaData[6:]
+			}
+
+			err = json.Unmarshal(metaData, &metadata)
+			if err != nil {
+				return result, fmt.Errorf("解析元数据JSON失败: %v", err)
+			}
+
+			if metadata.Format != "" {
+				result.Format = metadata.Format
+			}
+			if metadata.AlbumPic != "" {
+				result.CoverURL = metadata.AlbumPic
+			}
+		}
+	}
+
+	_, err = f.Seek(4, io.SeekCurrent)
+	if err != nil {
+		return result, fmt.Errorf("跳过CRC32失败: %v", err)
+	}
+
+	_, err = f.Seek(5, io.SeekCurrent)
+	if err != nil {
+		return result, fmt.Errorf("跳过字节失败: %v", err)
+	}
+
+	imageSizeBytes := make([]byte, 4)
+	_, err = io.ReadFull(f, imageSizeBytes)
+	if err != nil {
+		return result, fmt.Errorf("读取图片大小失败: %v", err)
+	}
+	imageSize := binary.LittleEndian.Uint32(imageSizeBytes)
+
+	if imageSize > 0 {
+		result.CoverStatus = models.CoverStatusBuiltIn
+		result.HasCover = true
+	} else if metadata.AlbumPic != "" {
+		result.CoverStatus = models.CoverStatusWaitingDownload
+		result.HasCover = true
+	} else {
+		result.CoverStatus = models.CoverStatusNotSupported
+		result.HasCover = false
+	}
+
+	return result, nil
+}
